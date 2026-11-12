@@ -1,0 +1,4 @@
+# The game and any local backup of it must stay on the player's machine.
+*.dll
+*.exe
+*.original.dll

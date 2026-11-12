@@ -1,0 +1,13 @@
+The notes and scripts in this folder are original text:
+apply.ps1, restore.ps1, common.ps1, README.md, and developer_report.txt.
+
+Copyright 2026 the authors of this repository.
+
+You may use, copy, modify, and share these files, including for a public
+non-commercial bug report. They are provided as is, without warranty.
+
+Titan Quest, Titan Quest Anniversary Edition, and Direct3D11.dll are the
+property of their owners. This folder does not contain the game, and this
+text does not grant any right to it. A person who runs the script must
+already have the game installed. Do not add Direct3D11.dll, a patched copy,
+or Direct3D11.original.dll to the repository.

@@ -1,0 +1,73 @@
+Titan Quest Anniversary Edition 2.10.21415
+All UI text disappears after portal travel (DirectX 11)
+Report for the renderer, file Direct3D11.dll (583,680 bytes)
+
+Summary
+-------
+On the DirectX 11 renderer, every interface string is drawn from one glyph atlas. The default atlas is 1024x1024. After enough new characters have been packed (portal destination names are a reliable source; Cyrillic at a high UI scale fills it sooner), the next glyph that does not fit sets a wipe flag. The following upload clears the glyph list and fills the live texture with zeros. The flag is cleared and the old glyphs are never repacked. Every label in the game, including the main menu, stays blank until the process is restarted. Icons, frames, and the 3D scene are unaffected.
+
+Seen on a live session: language Russian, ScaleUI high, 3840x2160, launched as TQ.exe /dx11, systemfont empty. Inventory, skill bar, gold, and potion counts had no text while the item icons were still drawn.
+
+Cause
+-----
+Direct3D11.dll, preferred image base 0x10000000. .text file offset = RVA - 0xC00.
+
+Default atlas size, RVA 0x65199:
+
+    BE 00 04 00 00          mov esi, 0x400
+    84 C0                   test al, al
+    8B CE                   mov ecx, esi
+    BA 00 10 00 00          mov edx, 0x1000
+    0F 45 CA                cmovnz ecx, edx
+    BA 00 08 00 00          mov edx, 0x800
+    0F 45 F2                cmovnz esi, edx
+
+esi is both the initial width and the initial height. With g_pcFontOverride empty this is 1024x1024. With the override set it is 4096x2048. The chosen size is stored on the font object at +0x88 (width) and +0x8C (height).
+
+Packer, RVA 0x6396C. ecx/edx are the next glyph position, esi is the font:
+
+    3B 8E 88 00 00 00       cmp ecx, [esi+0x88]
+    0F 83 86 04 00 00       jnc 0x63DFE          ; x >= width
+    3B 96 8C 00 00 00       cmp edx, [esi+0x8C]
+    0F 83 7A 04 00 00       jnc 0x63DFE          ; y >= height
+
+RVA 0x63DFE, the overflow target:
+
+    C6 86 90 00 00 00 01    mov byte [esi+0x90], 1
+
++0x90 is the only place this flag is set. The constructor stores 0 there (RVA 0x655BC).
+
+The glyph upload (RVA 0x64350) always drops the CPU glyph vector at RVA 0x645D6 (end pointer = begin pointer) and clears the dirty byte at +0x2C. If +0x90 is set it then calls RVA 0x63E50, which:
+
+  - allocates width * height bytes and fills them with zero
+  - uploads that buffer with the device context method at vtable +0xC0
+  - clears the placement lists at +0x64, +0x44, +0x7C, +0x80, +0x84, +0x94
+  - stores 0 back to +0x90
+
+No second pass rebuilds the glyphs that were just discarded. GraphicsFont::Initialize in Engine.dll (RVA 0x168600) also refuses to build again while the font handle at +0x6C is non-null, and returns InitResult 4. A restart is the only recovery, because it creates a new font object.
+
+DirectX 9 does not contain this atlas. Direct3D.dll exports ResetRenderDevice. Direct3D11.dll exports only CreateRenderDevice, DestroyRenderDevice, CreateTextureFromDDS, and NvOptimusEnablement, so Engine.dll's ResetDevice dispatcher (RVA 0x20F660, GetProcAddress "ResetRenderDevice") skips the DX11 renderer.
+
+Suggested fix
+-------------
+When the next glyph does not fit:
+
+  1. Keep the current atlas and the current glyph list.
+  2. Allocate a larger atlas (2048x2048 is enough for the Cyrillic set at high UI scale; 16 MB).
+  3. Repack the existing glyphs into the new texture.
+  4. Call CreateTexture, and replace the live texture only if it succeeds. On E_OUTOFMEMORY (0x8007000E, already logged as "CreateTexture error %s") leave the old texture bound.
+
+Do not set +0x90, and do not call the zero-fill at RVA 0x63E50, unless a new atlas has already been uploaded. Clearing +0x2C in the same breath makes the loss permanent, because nothing is marked dirty for a refill.
+
+Community workaround already tested against this DLL
+----------------------------------------------------
+Two .text edits. No relocations to update.
+
+  1. File 0x64599 (RVA 0x65199): 04 -> 08 in "mov esi, 0x400", so the default atlas is 2048x2048. The 4096x2048 override branch is unchanged.
+  2. File 0x631FE (RVA 0x63DFE): the seven-byte "mov byte [esi+0x90], 1" replaced with nop. An overflow still returns from the packer, but it no longer schedules a wipe. Text already drawn stays. Only the glyph that did not fit is missing.
+
+Original file saved as Direct3D11.original.dll. Apply and restore scripts are apply.ps1 and restore.ps1. They refuse to run while TQ.exe is open and always patch from the original backup.
+
+Reproduction
+------------
+Launch TQ.exe /dx11. Russian (or another large character set), HUD scale high, 1080p or 4K. Travel through several different portals so new location names are packed. At some point every string goes blank at once: item names, gold, potion counts, skill labels, and the main menu. Item icons remain. Restarting the game brings the text back. Exiting to the menu does not.
